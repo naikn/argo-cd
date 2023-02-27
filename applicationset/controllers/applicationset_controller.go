@@ -31,7 +31,9 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	"github.com/argoproj/argo-cd/v2/applicationset/generators"
@@ -539,7 +541,17 @@ func (r *ApplicationSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			&clusterSecretEventHandler{
 				Client: mgr.GetClient(),
 				Log:    log.WithField("type", "createSecretEventHandler"),
-			}).
+			}).WithEventFilter(predicate.Funcs{
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			if _, ok := e.ObjectNew.(*argov1alpha1.Application); ok {
+				oldGenerationId := e.ObjectOld.GetGeneration()
+				newGenerationId := e.ObjectOld.GetGeneration()
+				return oldGenerationId != newGenerationId
+			} else {
+				return true
+			}
+		},
+	}).
 		// TODO: also watch Applications and respond on changes if we own them.
 		Complete(r)
 }

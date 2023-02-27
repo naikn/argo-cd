@@ -1588,17 +1588,37 @@ func (ctrl *ApplicationController) persistAppStatus(orig *appv1.Application, new
 		message := fmt.Sprintf("Updated health status: %s -> %s", orig.Status.Health.Status, newStatus.Health.Status)
 		ctrl.auditLogger.LogAppEvent(orig, argo.EventInfo{Reason: argo.EventReasonResourceUpdated, Type: v1.EventTypeNormal}, message)
 	}
-	var newAnnotations map[string]string
-	if orig.GetAnnotations() != nil {
-		newAnnotations = make(map[string]string)
+
+	appClient := ctrl.applicationClientset.ArgoprojV1alpha1().Applications(orig.Namespace)
+
+	if _, found := orig.GetAnnotations()[appv1.AnnotationKeyRefresh]; found {
+		newAnnotations := make(map[string]string)
 		for k, v := range orig.GetAnnotations() {
 			newAnnotations[k] = v
 		}
 		delete(newAnnotations, appv1.AnnotationKeyRefresh)
+
+		patchAnnotation, modified, err := diff.CreateTwoWayMergePatch(
+			&appv1.Application{ObjectMeta: metav1.ObjectMeta{Annotations: orig.GetAnnotations()}},
+			&appv1.Application{ObjectMeta: metav1.ObjectMeta{Annotations: newAnnotations}}, appv1.Application{})
+
+		if err != nil {
+			logCtx.Errorf("Error constructing app annotation patch: %v", err)
+			return
+		}
+
+		if modified {
+			_, err = appClient.Patch(context.Background(), orig.Name, types.MergePatchType, patchAnnotation, metav1.PatchOptions{})
+			if err != nil {
+				logCtx.Warnf("Error removing app refresh annotation: %v", err)
+			}
+		}
 	}
-	patch, modified, err := diff.CreateTwoWayMergePatch(
-		&appv1.Application{ObjectMeta: metav1.ObjectMeta{Annotations: orig.GetAnnotations()}, Status: orig.Status},
-		&appv1.Application{ObjectMeta: metav1.ObjectMeta{Annotations: newAnnotations}, Status: *newStatus}, appv1.Application{})
+
+	patchStatus, modified, err := diff.CreateTwoWayMergePatch(
+		&appv1.Application{Status: orig.Status},
+		&appv1.Application{Status: *newStatus}, appv1.Application{})
+
 	if err != nil {
 		logCtx.Errorf("Error constructing app status patch: %v", err)
 		return
@@ -1607,8 +1627,9 @@ func (ctrl *ApplicationController) persistAppStatus(orig *appv1.Application, new
 		logCtx.Infof("No status changes. Skipping patch")
 		return
 	}
-	appClient := ctrl.applicationClientset.ArgoprojV1alpha1().Applications(orig.Namespace)
-	_, err = appClient.Patch(context.Background(), orig.Name, types.MergePatchType, patch, metav1.PatchOptions{})
+
+	subResource := "status"
+	_, err = appClient.Patch(context.Background(), orig.Name, types.MergePatchType, patchStatus, metav1.PatchOptions{}, subResource)
 	if err != nil {
 		logCtx.Warnf("Error updating application: %v", err)
 	} else {
